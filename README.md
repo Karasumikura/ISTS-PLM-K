@@ -51,7 +51,7 @@ conda create -n ISTS-PLM python=3.9
 conda activate ISTS-PLM
    ```
 
-   3. Install the required Python modules using file [requirements.txt](requirements.txt).
+   3. Install the required Python modules using file [requirement.txt](requirement.txt).
 
    ```bash
 pip install -r requirement.txt
