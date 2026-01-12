@@ -229,15 +229,122 @@ class istsplm_forecast(nn.Module):
             for i in range(len(self.gpts)):
                 for _, (name, param) in enumerate(self.gpts[i].named_parameters()):
                     param.requires_grad = False
+        
         self.ln_proj = nn.LayerNorm(self.d_model)
 
-        # Enhanced Decoder
-        self.predict_decoder = ResDecoder(
-            input_dim=opt.d_model+1, 
-            hidden_dim=opt.d_model, 
-            output_dim=1,
-            dropout=opt.dropout if hasattr(opt, 'dropout') else 0.1
+        # [MODIFIED] Update decoder to take d_model input (time info is now in embedding)
+        # Using a deeper MLP for the generation head
+        self.predict_decoder = nn.Sequential(
+            nn.Linear(opt.d_model, opt.d_model),
+            nn.GELU(),
+            nn.Linear(opt.d_model, opt.d_model // 2),
+            nn.GELU(),
+            nn.Linear(opt.d_model // 2, 1)
         ).to(opt.device)
+    
+    def step_embedding(self, time_val, value_val):
+        """
+        Helper function to embed a single autoregressive step.
+        time_val: (B*D, 1)
+        value_val: (B*D, 1)
+        Returns: (B*D, 1, d_model)
+        """
+        # We manually apply the logic from DataEmbedding_ITS_Ind_VarPrompt
+        # 1. Time Embedding
+        time_emb = self.enc_embedding.time_embedding(time_val.unsqueeze(-1)) # (B*D, 1, 1, d_model)
+        
+        # 2. Value Embedding
+        # Construct (value, mask) pair. For prediction, we assume mask=1 (valid inference)
+        mask_val = torch.ones_like(value_val)
+        x_int = torch.cat([value_val.unsqueeze(-1), mask_val.unsqueeze(-1)], dim=-1) # (B*D, 1, 1, 2)
+        value_emb = self.enc_embedding.value_embedding(x_int) # (B*D, 1, 1, d_model)
+        
+        # 3. Combine (Use TE logic)
+        if self.enc_embedding.use_te:
+            # mask * time + value
+            x = mask_val.unsqueeze(-1).unsqueeze(-1) * time_emb + value_emb
+        else:
+            x = value_emb
+            
+        return x.squeeze(2) # (B*D, 1, d_model)
+
+    def forecasting(self, time_steps_to_predict, observed_data, observed_tp, observed_mask):
+        """ 
+        Autoregressive Forecasting using GPT (gpts[0])
+        
+        time_steps_to_predict: (B, Lp)
+        observed_tp: (B, L, D)
+        observed_data: (B, L, D)
+        observed_mask: (B, L, D)
+        """
+        B, L, D = observed_data.shape
+        Lp = time_steps_to_predict.size(1)
+
+        # --- 1. Encode History ---
+        # Get history embeddings
+        # outputs shape: (B*D, L+1, d_model)
+        outputs, var_embedding = self.enc_embedding(observed_tp, observed_data, observed_mask) 
+        
+        # Pass through Temporal GPT (gpts[0])
+        # We use use_cache=True to get past_key_values for AR generation
+        gpt_out = self.gpts[0](inputs_embeds=outputs, use_cache=True)
+        past_key_values = gpt_out.past_key_values
+        
+        # The last hidden state represents the context up to t_now
+        last_hidden = gpt_out.last_hidden_state[:, -1:, :] # (B*D, 1, d_model)
+
+        # --- 2. Autoregressive Generation Loop ---
+        predictions = []
+        
+        # Prepare inputs for the loop
+        # Expand time steps for all variables: (B, Lp) -> (B, Lp, D) -> (B*D, Lp)
+        time_pred_flat = time_steps_to_predict.unsqueeze(-1).repeat(1, 1, D).reshape(B*D, Lp)
+        
+        # Initial value for AR: The last observed value in history
+        # (B, L, D) -> (B*D, L)
+        observed_data_flat = observed_data.permute(0, 2, 1).reshape(B*D, L)
+        # Use the last value as the starting point for generation
+        current_val = observed_data_flat[:, -1].unsqueeze(-1) # (B*D, 1)
+
+        # If last value was missing (mask=0), we might want to use the model's reconstruction
+        # But for simplicity, we start with the data value (0 if missing).
+        
+        for i in range(Lp):
+            # Get target time for this step
+            current_time = time_pred_flat[:, i].unsqueeze(-1) # (B*D, 1)
+            
+            # Embed the current step (Last Value + Next Time)
+            step_emb = self.step_embedding(current_time, current_val) # (B*D, 1, d_model)
+            
+            # GPT Forward (One step)
+            gpt_out = self.gpts[0](
+                inputs_embeds=step_emb, 
+                past_key_values=past_key_values,
+                use_cache=True
+            )
+            
+            # Update KV cache
+            past_key_values = gpt_out.past_key_values
+            hidden_state = gpt_out.last_hidden_state # (B*D, 1, d_model)
+            
+            # Project to scalar value
+            # (B*D, 1, d_model) -> (B*D, 1, 1) -> (B*D, 1)
+            pred_val = self.predict_decoder(hidden_state).squeeze(-1)
+            
+            predictions.append(pred_val)
+            
+            # Update current_val for next iteration (Autoregressive feeding)
+            current_val = pred_val
+
+        # --- 3. Format Output ---
+        # Stack predictions along time dimension
+        results = torch.cat(predictions, dim=1) # (B*D, Lp)
+        
+        # Reshape back to (1, B, Lp, D) as expected by the framework
+        # (B*D, Lp) -> (B, D, Lp) -> (B, Lp, D)
+        results = results.reshape(B, D, Lp).permute(0, 2, 1)
+        
+        return results.unsqueeze(0) # (1, B, Lp, D)
     
         
     def forecasting(self, time_steps_to_predict, observed_data, observed_tp, observed_mask):
