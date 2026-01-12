@@ -8,27 +8,6 @@ from transformers.models.gpt2.modeling_gpt2_wope import GPT2Model_wope
 from transformers.models.bert.modeling_bert_wope import BertModel_wope
 from models.embed import *
 
-# 改进的解码头
-class ResHead(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.1):
-        super(ResHead, self).__init__()
-        self.layer1 = nn.Linear(input_dim, hidden_dim)
-        self.act = nn.GELU()
-        self.dropout = nn.Dropout(dropout)
-        self.layer2 = nn.Linear(hidden_dim, output_dim)
-        self.norm = nn.LayerNorm(hidden_dim)
-
-    def forward(self, x):
-        residual = x[:, :, :-1] if x.shape[-1] > self.layer1.in_features else x
-        x = self.layer1(x)
-        x = self.act(x)
-        x = self.dropout(x)
-        if residual.shape[-1] == x.shape[-1]:
-            x = self.norm(x + residual)
-        else:
-            x = self.norm(x)
-        return self.layer2(x)
-
 class ists_plm(nn.Module):
     
     def __init__(self, opt):
@@ -184,23 +163,33 @@ class istsplm_forecast(nn.Module):
         self.enc_embedding = DataEmbedding_ITS_Ind_VarPrompt(self.feat_dim, self.d_model, self.feat_dim, device=opt.device, dropout=opt.dropout)
 
         self.gpts = nn.ModuleList()
-        for i in range(2):
+        # [MODIFIED] Increased range to 3 to include Decoder PLM
+        for i in range(3):
             gpt2 = GPT2Model_wope.from_pretrained('./PLMs/gpt2', output_attentions=True, output_hidden_states=True)
             bert = BertModel_wope.from_pretrained('./PLMs/bert-base-uncased', output_attentions=True, output_hidden_states=True)
-            print(opt.te_model, opt.st_model)
-            if(i==0):
+            print(f"Loading PLM {i}: {opt.te_model if i != 1 else opt.st_model}")
+            
+            if(i==0): # Time Encoder (Intra-series)
                 if opt.te_model == 'gpt':
                     gpt2.h = gpt2.h[:opt.n_te_plmlayer]
                     self.gpts.append(gpt2)
                 elif opt.te_model == 'bert':
                     bert.encoder.layer = bert.encoder.layer[:opt.n_te_plmlayer]
                     self.gpts.append(bert)
-            elif(i==1):
+            elif(i==1): # Space Encoder (Inter-series)
                 if opt.st_model == 'gpt':
                     gpt2.h = gpt2.h[:opt.n_st_plmlayer]
                     self.gpts.append(gpt2)
                 elif opt.st_model == 'bert':
                     bert.encoder.layer = bert.encoder.layer[:opt.n_st_plmlayer]
+                    self.gpts.append(bert)
+            elif(i==2): # Decoder (Sequence Generator)
+                # Use 'te_model' architecture for decoder as it processes time sequence
+                if opt.te_model == 'gpt':
+                    gpt2.h = gpt2.h[:opt.n_te_plmlayer]
+                    self.gpts.append(gpt2)
+                elif opt.te_model == 'bert':
+                    bert.encoder.layer = bert.encoder.layer[:opt.n_te_plmlayer]
                     self.gpts.append(bert)
         
         if(opt.semi_freeze):
@@ -217,94 +206,76 @@ class istsplm_forecast(nn.Module):
             for i in range(len(self.gpts)):
                 for _, (name, param) in enumerate(self.gpts[i].named_parameters()):
                     param.requires_grad = False
+        
         self.ln_proj = nn.LayerNorm(self.d_model)
 
-        # Autoregressive Prediction Head
-        # Projects [Hidden_State + Time_Encoding] -> Value
-        self.predict_decoder = ResHead(
-            input_dim=opt.d_model+1, 
-            hidden_dim=opt.d_model, 
-            output_dim=1,
-            dropout=opt.dropout if hasattr(opt, 'dropout') else 0.1
-        ).to(opt.device)
+        # [MODIFIED] Decoder components instead of MLP
+        # 1. Time Embedding to project scalar time to d_model
+        self.decoder_time_emb = TimeEmbedding(self.d_model).to(opt.device)
+        # 2. Final Projection
+        self.decoder_out_proj = nn.Linear(self.d_model, 1).to(opt.device)
     
         
     def forecasting(self, time_steps_to_predict, observed_data, observed_tp, observed_mask):
         """ 
-        Autoregressive Forecasting
+        observed_tp: (B, L, D)
+        observed_data: (B, L, D) tensor containing the observed values.
+        observed_mask: (B, L, D) tensor containing 1 where values were observed and 0 otherwise.
         """
     
         B, L, D = observed_data.shape
-        B, Lp = time_steps_to_predict.shape
         
-        # Initialize current sequences with history
-        curr_data = observed_data
-        curr_tp = observed_tp
-        curr_mask = observed_mask
+        # --- PART 1: ENCODING HISTORY (Same as original) ---
+        outputs, var_embedding = self.enc_embedding(observed_tp, observed_data, observed_mask) # (B*D, L+1, d_model)
+        outputs = self.gpts[0](inputs_embeds=outputs).last_hidden_state # (B*D, L+1, d_model)
+
+        observed_mask = observed_mask.permute(0, 2, 1).reshape(B*D, -1, 1) # (B*D, L, 1)
+        observed_mask = torch.cat([torch.ones_like(observed_mask[:,:1]), observed_mask], dim=1) # (B*D, L+1, 1)
         
-        # We will collect predictions here
-        predictions = []
+        ### avg pooling
+        n_nonmask = observed_mask.sum(dim=1)  # (B*D, 1)
+        outputs = (outputs * observed_mask).sum(dim=1) / n_nonmask # (B*D, d_model)
+        outputs = self.ln_proj(outputs.view(B, D, -1))  # (B, D, d_model)
 
-        # Start Autoregressive Loop
-        for i in range(Lp):
-            # 1. Embed current sequence
-            # Note: For optimal efficiency, one should implement KV-caching.
-            # Here we re-run forward pass for simplicity and stability with current architecture.
-            outputs, var_embedding = self.enc_embedding(curr_tp, curr_data, curr_mask) # (B*D, L_curr+1, d_model)
-            
-            # 2. Time-GPT (Intra-series)
-            outputs = self.gpts[0](inputs_embeds=outputs).last_hidden_state # (B*D, L_curr+1, d_model)
-            
-            # 3. Reshape for Var-GPT
-            # outputs: (B*D, L_curr+1, d_model) -> (B, D, L_curr+1, d_model) -> (B, L_curr+1, D, d_model)
-            outputs = outputs.view(B, D, -1, self.d_model).permute(0, 2, 1, 3)
-            
-            # Add var embedding (B, 1, D, d_model)
-            # var_embedding from enc_embedding is (B, 1, D, d_model) in our context?
-            # Actually enc_embedding returns (..., vars_prompt) where vars_prompt is (B, 1, D, d_model)
-            # So simple addition works
-            outputs = outputs + var_embedding # (B, L_curr+1, D, d_model)
-            
-            # 4. Var-GPT (Inter-series)
-            # Flatten B and L dims: (B * (L_curr+1), D, d_model)
-            outputs_flat = outputs.flatten(0, 1) 
-            
-            outputs_flat = self.gpts[1](inputs_embeds=outputs_flat).last_hidden_state
-            
-            # Reshape back: (B, L_curr+1, D, d_model)
-            outputs_final = outputs_flat.view(B, -1, D, self.d_model)
-            
-            # Get last time step hidden state: (B, D, d_model)
-            last_hidden = outputs_final[:, -1, :, :]
-            
-            # 5. Predict
-            # next_t: (B, 1)
-            next_t = time_steps_to_predict[:, i:i+1]
-            
-            # Expand next_t to match (B, D, 1) for decoder input
-            next_t_expanded = next_t.unsqueeze(-1).repeat(1, D, 1) # (B, D, 1)
-            
-            decoder_input = torch.cat([last_hidden, next_t_expanded], dim=-1) # (B, D, d_model+1)
-            
-            pred_val = self.predict_decoder(decoder_input).squeeze(-1) # (B, D)
-            
-            predictions.append(pred_val.unsqueeze(1))
-            
-            # 6. Update History
-            # curr_data: (B, L, D) -> (B, L+1, D)
-            curr_data = torch.cat([curr_data, pred_val.unsqueeze(1)], dim=1)
-            
-            # curr_mask: (B, L, D) -> (B, L+1, D)
-            curr_mask = torch.cat([curr_mask, torch.ones_like(pred_val.unsqueeze(1))], dim=1)
-            
-            # curr_tp: (B, L, D) -> (B, L+1, D)
-            # [FIXED] Expand next_t for cat: (B, 1) -> (B, 1, D)
-            next_t_for_cat = next_t.unsqueeze(-1).repeat(1, 1, D) # (B, 1, D)
-            curr_tp = torch.cat([curr_tp, next_t_for_cat], dim=1)
+        outputs = outputs + var_embedding.squeeze()
+        outputs = self.gpts[1](inputs_embeds=outputs).last_hidden_state # (B, D, d_model)
+        
+        # outputs now contains the "Context Vector" for each variable: (B, D, d_model)
 
-        # Concatenate all predictions
-        final_output = torch.cat(predictions, dim=1).unsqueeze(0) # (1, B, Lp, D)
-        return final_output
+        # --- PART 2: DECODING FUTURE (Using 3rd PLM) ---
+        B, Lp = time_steps_to_predict.size()
+        
+        # 1. Embed Future Time Steps
+        # time_steps_to_predict: (B, Lp) -> (B, Lp, 1)
+        time_pred = time_steps_to_predict.unsqueeze(-1)
+        # Map time to d_model using TimeEmbedding
+        # Result: (B, Lp, d_model)
+        time_emb = self.decoder_time_emb(time_pred) 
+        
+        # 2. Combine Context + Future Time
+        # Context (outputs): (B, D, d_model) -> (B, D, 1, d_model)
+        # Future (time_emb): (B, Lp, d_model) -> (B, 1, Lp, d_model)
+        # We add them to "condition" the future time steps on the variable's history context
+        # Result: (B, D, Lp, d_model)
+        decoder_input = outputs.unsqueeze(2) + time_emb.unsqueeze(1)
+        
+        # 3. Reshape for PLM Processing
+        # We treat each variable's forecast as an independent sequence of length Lp
+        # Shape: (B * D, Lp, d_model)
+        decoder_input = decoder_input.view(B*D, Lp, self.d_model)
+        
+        # 4. Pass through 3rd PLM (Decoder)
+        # The PLM models the dependencies between the Lp future points (smoothing, trends)
+        dec_out = self.gpts[2](inputs_embeds=decoder_input).last_hidden_state # (B*D, Lp, d_model)
+        
+        # 5. Project to Value
+        pred = self.decoder_out_proj(dec_out) # (B*D, Lp, 1)
+        
+        # 6. Reshape to required output format (1, B, Lp, D)
+        # (B*D, Lp, 1) -> (B, D, Lp) -> (B, Lp, D)
+        pred = pred.view(B, D, Lp).permute(0, 2, 1)
+        
+        return pred.unsqueeze(0) # (1, B, Lp, D)
 
 class istsplm_vector_forecast(nn.Module):
     
