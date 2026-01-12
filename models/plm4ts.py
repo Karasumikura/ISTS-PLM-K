@@ -8,6 +8,39 @@ from transformers.models.gpt2.modeling_gpt2_wope import GPT2Model_wope
 from transformers.models.bert.modeling_bert_wope import BertModel_wope
 from models.embed import *
 
+class ResDecoder(nn.Module):
+    """
+    Enhanced Decoder with Residual Connections and LayerNorm
+    Structure: Linear -> GELU -> [Residual Block: Linear -> GELU -> Dropout -> Linear] -> LayerNorm -> Linear
+    """
+    def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.1):
+        super(ResDecoder, self).__init__()
+        self.first_layer = nn.Linear(input_dim, hidden_dim)
+        self.act = nn.GELU()
+        
+        self.layer_norm = nn.LayerNorm(hidden_dim)
+        self.dropout = nn.Dropout(dropout)
+        
+        self.linear1 = nn.Linear(hidden_dim, hidden_dim)
+        self.linear2 = nn.Linear(hidden_dim, hidden_dim)
+        
+        self.head = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, x):
+        x = self.first_layer(x)
+        x = self.act(x)
+        
+        # Residual Block
+        residual = x
+        out = self.linear1(x)
+        out = self.act(out)
+        out = self.dropout(out)
+        out = self.linear2(out)
+        x = self.layer_norm(out + residual) # Add & Norm
+        
+        x = self.head(x)
+        return x
+
 class ists_plm(nn.Module):
     
     def __init__(self, opt):
@@ -198,13 +231,13 @@ class istsplm_forecast(nn.Module):
                     param.requires_grad = False
         self.ln_proj = nn.LayerNorm(self.d_model)
 
-        self.predict_decoder = nn.Sequential(
-			nn.Linear(opt.d_model+1, opt.d_model),
-			nn.ReLU(inplace=True),
-			nn.Linear(opt.d_model, opt.d_model),
-			nn.ReLU(inplace=True),
-			nn.Linear(opt.d_model, 1)
-			).to(opt.device)
+        # Enhanced Decoder
+        self.predict_decoder = ResDecoder(
+            input_dim=opt.d_model+1, 
+            hidden_dim=opt.d_model, 
+            output_dim=1,
+            dropout=opt.dropout if hasattr(opt, 'dropout') else 0.1
+        ).to(opt.device)
     
         
     def forecasting(self, time_steps_to_predict, observed_data, observed_tp, observed_mask):
@@ -257,13 +290,13 @@ class istsplm_vector_forecast(nn.Module):
             else:
                 param.requires_grad = False
                 
-        self.predict_decoder = nn.Sequential(
-			nn.Linear(opt.d_model+1, opt.d_model),
-			nn.ReLU(inplace=True),
-			nn.Linear(opt.d_model, opt.d_model),
-			nn.ReLU(inplace=True),
-			nn.Linear(opt.d_model, opt.input_dim)
-			).to(opt.device)
+        # Enhanced Decoder
+        self.predict_decoder = ResDecoder(
+            input_dim=opt.d_model+1, 
+            hidden_dim=opt.d_model, 
+            output_dim=opt.input_dim,
+            dropout=opt.dropout if hasattr(opt, 'dropout') else 0.1
+        ).to(opt.device)
 
         
     def forecasting(self, time_steps_to_predict, observed_data, observed_tp, observed_mask):
@@ -309,13 +342,13 @@ class istsplm_set_forecast(nn.Module):
             else:
                 param.requires_grad = False
 
-        self.predict_decoder = nn.Sequential(
-			nn.Linear(opt.d_model+1, opt.d_model),
-			nn.ReLU(inplace=True),
-			nn.Linear(opt.d_model, opt.d_model),
-			nn.ReLU(inplace=True),
-			nn.Linear(opt.d_model, opt.input_dim)
-			).to(opt.device)
+        # Enhanced Decoder
+        self.predict_decoder = ResDecoder(
+            input_dim=opt.d_model+1, 
+            hidden_dim=opt.d_model, 
+            output_dim=opt.input_dim,
+            dropout=opt.dropout if hasattr(opt, 'dropout') else 0.1
+        ).to(opt.device)
 
         
     def forecasting(self, time_steps_to_predict, observed_data, observed_tp, observed_mask):
