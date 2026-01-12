@@ -8,7 +8,6 @@ from transformers.models.gpt2.modeling_gpt2_wope import GPT2Model_wope
 from transformers.models.bert.modeling_bert_wope import BertModel_wope
 from models.embed import *
 
-# 简单的残差解码头，用于将隐状态映射为数值
 class ResHead(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.1):
         super(ResHead, self).__init__()
@@ -68,6 +67,8 @@ class ists_plm(nn.Module):
                 for _, (name, param) in enumerate(self.gpts[i].named_parameters()):
                     param.requires_grad = False
 
+        self.act = F.gelu
+        self.dropout = nn.Dropout(p=opt.dropout)
         self.ln_proj = nn.LayerNorm(self.d_model)
         
     def forward(self, observed_tp, observed_data, observed_mask, opt=None):
@@ -129,8 +130,6 @@ class istsplm_forecast(nn.Module):
                     
         self.ln_proj = nn.LayerNorm(self.d_model)
 
-        # Autoregressive Prediction Head
-        # Projects [Hidden_State + Time_Encoding] -> Value
         self.predict_decoder = ResHead(
             input_dim=opt.d_model+1, 
             hidden_dim=opt.d_model, 
@@ -139,77 +138,60 @@ class istsplm_forecast(nn.Module):
         ).to(opt.device)
     
     def forecasting(self, time_steps_to_predict, observed_data, observed_tp, observed_mask):
-        """
-        Autoregressive Generation
-        """
         B, L, D = observed_data.shape
         B, Lp = time_steps_to_predict.shape
         
-        # Initialize current sequences with history
         curr_data = observed_data
         curr_tp = observed_tp
         curr_mask = observed_mask
         
-        # We will collect predictions here
         predictions = []
 
-        # Start Autoregressive Loop
         for i in range(Lp):
-            # 1. Embed current sequence
-            # Note: For efficiency, one should implement KV-caching, but here we re-run for simplicity and correctness with existing embedding layers
-            outputs, var_embedding = self.enc_embedding(curr_tp, curr_data, curr_mask) # (B*D, Current_L+1, d_model)
+            # 1. Embed current sequence (B*D, L_curr, d_model)
+            outputs, var_embedding = self.enc_embedding(curr_tp, curr_data, curr_mask) 
             
             # 2. Time-GPT (Intra-series)
-            # Crucial: We do NOT pool here. We keep the sequence.
-            outputs = self.gpts[0](inputs_embeds=outputs).last_hidden_state # (B*D, Current_L+1, d_model)
+            outputs = self.gpts[0](inputs_embeds=outputs).last_hidden_state 
             
-            # 3. Handle Dimensions for Var-GPT
-            # Reshape to (B, Current_L+1, D, d_model)
-            outputs = outputs.view(B, D, -1, self.d_model).permute(0, 2, 1, 3) # (B, Current_L+1, D, d_model)
+            # 3. Reshape for Var-GPT
+            # outputs: (B*D, L+1, d_model) -> (B, D, L+1, d_model) -> (B, L+1, D, d_model)
+            outputs = outputs.view(B, D, -1, self.d_model).permute(0, 2, 1, 3) 
             
-            # Add variable embedding
-            outputs = outputs + var_embedding.unsqueeze(1) # Broadcast var_embedding
+            # 4. Add Variable Embedding (Inter-series interaction injection)
+            # var_embedding: (B, 1, D, d_model)
+            # outputs: (B, L+1, D, d_model)
+            # Broadcasting works naturally here (1 vs L+1).
+            outputs = outputs + var_embedding
             
-            # Flatten time and batch for Var-GPT processing: (B * (Current_L+1), D, d_model)
+            # Flatten for Var-GPT: (B * (L+1), D, d_model)
             curr_len = outputs.shape[1]
             outputs_flat = outputs.reshape(B * curr_len, D, self.d_model)
             
-            # 4. Var-GPT (Inter-series)
-            # This allows variables to interact at every time step
-            outputs_flat = self.gpts[1](inputs_embeds=outputs_flat).last_hidden_state # (B*L, D, d_model)
+            # 5. Var-GPT (Inter-series)
+            outputs_flat = self.gpts[1](inputs_embeds=outputs_flat).last_hidden_state 
             
-            # Reshape back: (B, Current_L+1, D, d_model)
+            # Reshape back: (B, L+1, D, d_model)
             outputs = outputs_flat.view(B, curr_len, D, self.d_model)
             
-            # 5. Get the last hidden state for prediction
+            # 6. Prediction
             last_hidden = outputs[:, -1, :, :] # (B, D, d_model)
             
-            # 6. Prepare input for decoder (Hidden + Next Time Stamp)
             next_t = time_steps_to_predict[:, i:i+1] # (B, 1)
-            # Expand time to (B, D, 1)
             next_t_expanded = next_t.unsqueeze(-1).repeat(1, D, 1) # (B, D, 1)
             
-            # Concat hidden state with target time
-            # decoder_input: (B, D, d_model + 1)
             decoder_input = torch.cat([last_hidden, next_t_expanded], dim=-1)
             
-            # 7. Predict Next Value
-            pred_val = self.predict_decoder(decoder_input) # (B, D, 1)
-            pred_val = pred_val.squeeze(-1) # (B, D)
+            pred_val = self.predict_decoder(decoder_input).squeeze(-1) # (B, D)
             
-            predictions.append(pred_val.unsqueeze(1)) # (B, 1, D)
+            predictions.append(pred_val.unsqueeze(1))
             
-            # 8. Append prediction to current sequence for next iteration
-            # Update Data
-            curr_data = torch.cat([curr_data, pred_val.unsqueeze(1)], dim=1) # (B, L+1, D)
-            # Update Time
-            curr_tp = torch.cat([curr_tp, next_t], dim=1) # (B, L+1)
-            # Update Mask (Generated values are treated as observed/mask=1 for the model context)
+            # 7. Update for next step
+            curr_data = torch.cat([curr_data, pred_val.unsqueeze(1)], dim=1) 
+            curr_tp = torch.cat([curr_tp, next_t], dim=1)
             new_mask = torch.ones_like(pred_val.unsqueeze(1))
             curr_mask = torch.cat([curr_mask, new_mask], dim=1)
 
-        # Concatenate all predictions
-        # Output shape: (1, B, Lp, D) as expected by evaluation code
         final_output = torch.cat(predictions, dim=1).unsqueeze(0)
         return final_output
 
