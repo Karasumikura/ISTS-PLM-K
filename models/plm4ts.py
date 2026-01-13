@@ -160,7 +160,8 @@ class istsplm_forecast(nn.Module):
         self.feat_dim = opt.input_dim
         self.d_model = opt.d_model
         self.input_len = opt.input_len
-        self.enc_embedding = DataEmbedding_ITS_Ind_VarPrompt(self.feat_dim, self.d_model, self.feat_dim, device=opt.device, dropout=opt.dropout)
+        # Disable additive TimeEmbedding (APE) by passing use_te=False
+        self.enc_embedding = DataEmbedding_ITS_Ind_VarPrompt(self.feat_dim, self.d_model, self.feat_dim, device=opt.device, dropout=opt.dropout, use_te=False)
 
         self.gpts = nn.ModuleList()
         # [MODIFIED] Increased range to 3 to include Decoder PLM
@@ -225,9 +226,22 @@ class istsplm_forecast(nn.Module):
     
         B, L, D = observed_data.shape
         
-        # --- PART 1: ENCODING HISTORY (Same as original) ---
+        # --- PART 1: ENCODING HISTORY ---
         outputs, var_embedding = self.enc_embedding(observed_tp, observed_data, observed_mask) # (B*D, L+1, d_model)
-        outputs = self.gpts[0](inputs_embeds=outputs).last_hidden_state # (B*D, L+1, d_model)
+        
+        # Prepare time_ids for RoPE
+        # observed_tp: (B, L, D) -> permute to (B, D, L) -> reshape to (B*D, L)
+        time_ids = observed_tp.permute(0, 2, 1).reshape(B*D, L)
+        
+        # The prompt token (first position) needs a timestamp. We'll use the first time step's value
+        # or 0 as a dummy timestamp. Let's use the first timestep for each series.
+        # time_ids: (B*D, L) -> we need (B*D, L+1) to include the prompt
+        # Use the first time value as the prompt's timestamp
+        prompt_time = time_ids[:, 0:1]  # (B*D, 1)
+        time_ids = torch.cat([prompt_time, time_ids], dim=1)  # (B*D, L+1)
+        
+        # Pass time_ids to gpts[0] for time-based RoPE
+        outputs = self.gpts[0](inputs_embeds=outputs, time_ids=time_ids).last_hidden_state # (B*D, L+1, d_model)
 
         observed_mask = observed_mask.permute(0, 2, 1).reshape(B*D, -1, 1) # (B*D, L, 1)
         observed_mask = torch.cat([torch.ones_like(observed_mask[:,:1]), observed_mask], dim=1) # (B*D, L+1, 1)
