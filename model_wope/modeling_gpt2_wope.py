@@ -117,13 +117,17 @@ def apply_rotary_pos_emb(q, k, cos, sin):
     cos = cos.unsqueeze(1)
     sin = sin.unsqueeze(1)
     
-    # Split q and k into two halves
-    q1, q2 = q.chunk(2, dim=-1)
-    k1, k2 = k.chunk(2, dim=-1)
+    # Apply rotation: [cos, cos] * [q] + [-sin, sin] * [q_rotate]
+    # where q_rotate is q with adjacent pairs swapped
+    # This implements the rotation matrix multiplication
     
-    # Apply rotation
-    q_rotated = torch.cat([q1 * cos - q2 * sin, q1 * sin + q2 * cos], dim=-1)
-    k_rotated = torch.cat([k1 * cos - k2 * sin, k1 * sin + k2 * cos], dim=-1)
+    # Create rotated versions by swapping adjacent pairs
+    def rotate_half(x):
+        x1, x2 = x[..., :x.shape[-1]//2], x[..., x.shape[-1]//2:]
+        return torch.cat([-x2, x1], dim=-1)
+    
+    q_rotated = q * cos + rotate_half(q) * sin
+    k_rotated = k * cos + rotate_half(k) * sin
     
     return q_rotated, k_rotated
 
