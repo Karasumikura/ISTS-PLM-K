@@ -90,8 +90,13 @@ class TimeRotaryEmbedding(nn.Module):
         # Ensure time_ids is on the same device as inv_freq
         time_ids = time_ids.to(device).float()
         
+        # Move inv_freq to device if needed (cached for efficiency)
+        inv_freq = self.inv_freq
+        if inv_freq.device != device:
+            inv_freq = inv_freq.to(device)
+        
         # Compute frequencies: (batch_size, seq_len, dim/2)
-        freqs = torch.einsum('bs,d->bsd', time_ids, self.inv_freq.to(device))
+        freqs = torch.einsum('bs,d->bsd', time_ids, inv_freq)
         
         # Compute embeddings: (batch_size, seq_len, dim)
         emb = torch.cat([freqs, freqs], dim=-1)
@@ -389,6 +394,8 @@ class GPT2Attention(nn.Module):
         value = self._split_heads(value, self.num_heads, self.head_dim)
 
         # Apply RoPE if time_ids are provided
+        # Note: RoPE is only applied to self-attention, not cross-attention
+        # Cross-attention queries attend to encoder states which have different temporal semantics
         if time_ids is not None and not self.is_cross_attention:
             seq_len = query.size(2)
             cos, sin = self.rotary_emb(time_ids, seq_len, query.device)
