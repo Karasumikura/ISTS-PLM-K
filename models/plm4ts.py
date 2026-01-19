@@ -65,7 +65,15 @@ class ists_plm(nn.Module):
         B, L, D = observed_data.shape
         
         outputs, var_embedding = self.enc_embedding(observed_tp, observed_data, observed_mask) # (B*D, L+1, d_model)
-        outputs = self.gpts[0](inputs_embeds=outputs).last_hidden_state # (B*D, L+1, d_model)
+        
+        # Generate time_ids for the first GPT (time encoder)
+        # observed_tp shape: (B, L, D), we need to reshape it to (B*D, L)
+        # Add a time step for the prompt token at the beginning
+        time_ids = observed_tp.permute(0, 2, 1).reshape(B*D, L)  # (B*D, L)
+        # For the prompt token (first position), use the first time value
+        time_ids = torch.cat([time_ids[:, :1], time_ids], dim=1)  # (B*D, L+1)
+        
+        outputs = self.gpts[0](inputs_embeds=outputs, time_ids=time_ids).last_hidden_state # (B*D, L+1, d_model)
         observed_mask = observed_mask.permute(0, 2, 1).reshape(B*D, -1, 1) # (B*D, L, 1)
         observed_mask = torch.cat([torch.ones_like(observed_mask[:,:1]), observed_mask], dim=1) # (B*D, L+1, 1)
         n_nonmask = observed_mask.sum(dim=1)  # (B*D, 1)
@@ -227,7 +235,13 @@ class istsplm_forecast(nn.Module):
         
         # --- PART 1: ENCODING HISTORY (Same as original) ---
         outputs, var_embedding = self.enc_embedding(observed_tp, observed_data, observed_mask) # (B*D, L+1, d_model)
-        outputs = self.gpts[0](inputs_embeds=outputs).last_hidden_state # (B*D, L+1, d_model)
+        
+        # Generate time_ids for the first GPT (time encoder)
+        time_ids = observed_tp.permute(0, 2, 1).reshape(B*D, L)  # (B*D, L)
+        # For the prompt token (first position), use the first time value
+        time_ids = torch.cat([time_ids[:, :1], time_ids], dim=1)  # (B*D, L+1)
+        
+        outputs = self.gpts[0](inputs_embeds=outputs, time_ids=time_ids).last_hidden_state # (B*D, L+1, d_model)
 
         observed_mask = observed_mask.permute(0, 2, 1).reshape(B*D, -1, 1) # (B*D, L, 1)
         observed_mask = torch.cat([torch.ones_like(observed_mask[:,:1]), observed_mask], dim=1) # (B*D, L+1, 1)
@@ -264,9 +278,13 @@ class istsplm_forecast(nn.Module):
         # Shape: (B * D, Lp, d_model)
         decoder_input = decoder_input.view(B*D, Lp, self.d_model)
         
+        # Generate time_ids for decoder (future time steps)
+        # Repeat time_steps_to_predict for each variable
+        time_ids_decoder = time_steps_to_predict.unsqueeze(1).repeat(1, D, 1).view(B*D, Lp)  # (B*D, Lp)
+        
         # 4. Pass through 3rd PLM (Decoder)
         # The PLM models the dependencies between the Lp future points (smoothing, trends)
-        dec_out = self.gpts[2](inputs_embeds=decoder_input).last_hidden_state # (B*D, Lp, d_model)
+        dec_out = self.gpts[2](inputs_embeds=decoder_input, time_ids=time_ids_decoder).last_hidden_state # (B*D, Lp, d_model)
         
         # 5. Project to Value
         pred = self.decoder_out_proj(dec_out) # (B*D, Lp, 1)
