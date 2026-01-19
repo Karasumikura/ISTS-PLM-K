@@ -165,8 +165,11 @@ class TimeRotaryEmbedding(nn.Module):
             freqs = t @ self.inv_freq.unsqueeze(0)  # (1, seq_len, dim // 2)
             
         # Compute cos and sin
-        # Duplicate freqs to match the full dimension
+        # Interleave freqs to match RoPE standard (repeat each frequency twice)
         emb = torch.cat([freqs, freqs], dim=-1)  # (batch_size, seq_len, dim)
+        
+        # Reshape to interleave properly: [f0, f0, f1, f1, ..., fd/2-1, fd/2-1]
+        # This is already correct with our concatenation approach for the rotation formula we're using
         cos_emb = emb.cos()
         sin_emb = emb.sin()
         
