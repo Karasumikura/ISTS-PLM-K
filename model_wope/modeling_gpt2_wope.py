@@ -35,7 +35,12 @@ from ...modeling_outputs import (
     SequenceClassifierOutputWithPast,
     TokenClassifierOutput,
 )
-from ...modeling_utils import PreTrainedModel, SequenceSummary
+try:
+    from ...modeling_utils import PreTrainedModel, SequenceSummary
+except ImportError:
+    # SequenceSummary was moved in newer transformers versions
+    from ...modeling_utils import PreTrainedModel
+    from ..gpt2.modeling_gpt2 import GPT2SequenceSummary as SequenceSummary
 from ...pytorch_utils import Conv1D, find_pruneable_heads_and_indices, prune_conv1d_layer
 from ...utils import (
     ModelOutput,
