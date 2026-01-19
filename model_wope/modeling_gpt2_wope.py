@@ -104,6 +104,12 @@ class TimeRotaryEmbedding(nn.Module):
         return emb.cos(), emb.sin()
 
 
+def rotate_half(x):
+    """Rotate half the hidden dims of the input."""
+    x1, x2 = x[..., :x.shape[-1]//2], x[..., x.shape[-1]//2:]
+    return torch.cat([-x2, x1], dim=-1)
+
+
 def apply_rotary_pos_emb(q, k, cos, sin):
     """
     Apply rotary position embeddings to query and key tensors.
@@ -125,11 +131,6 @@ def apply_rotary_pos_emb(q, k, cos, sin):
     # Apply rotation: [cos, cos] * [q] + [-sin, sin] * [q_rotate]
     # where q_rotate is q with adjacent pairs swapped
     # This implements the rotation matrix multiplication
-    
-    # Create rotated versions by swapping adjacent pairs
-    def rotate_half(x):
-        x1, x2 = x[..., :x.shape[-1]//2], x[..., x.shape[-1]//2:]
-        return torch.cat([-x2, x1], dim=-1)
     
     q_rotated = q * cos + rotate_half(q) * sin
     k_rotated = k * cos + rotate_half(k) * sin

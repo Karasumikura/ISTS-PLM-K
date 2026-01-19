@@ -22,7 +22,7 @@ def generate_time_ids_for_rope(observed_tp, B, L, D):
         time_ids: (B*D, L+1) tensor with time indices for RoPE
     """
     # observed_tp: (B, L, D) -> (B*D, L)
-    observed_tp_reshaped = observed_tp.permute(0, 2, 1).reshape(B*D, L)  # (B*D, L)
+    observed_tp_reshaped = observed_tp.transpose(1, 2).reshape(B*D, L)  # (B*D, L)
     # Add a zero time step at the beginning for the prompt token
     time_ids = torch.cat([torch.zeros_like(observed_tp_reshaped[:, :1]), observed_tp_reshaped], dim=1)  # (B*D, L+1)
     return time_ids
