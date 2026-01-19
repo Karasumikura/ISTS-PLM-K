@@ -76,11 +76,10 @@ class TimeRotaryEmbedding(nn.Module):
         self.register_buffer("inv_freq", inv_freq)
         self.max_time_steps = max_time_steps
 
-    def forward(self, time_ids, seq_len, device):
+    def forward(self, time_ids, device):
         """
         Args:
             time_ids: (batch_size, seq_len) tensor of time indices
-            seq_len: sequence length
             device: device to create tensors on
         
         Returns:
@@ -398,8 +397,7 @@ class GPT2Attention(nn.Module):
         # Note: RoPE is only applied to self-attention, not cross-attention
         # Cross-attention queries attend to encoder states which have different temporal semantics
         if time_ids is not None and not self.is_cross_attention:
-            seq_len = query.size(2)
-            cos, sin = self.rotary_emb(time_ids, seq_len, query.device)
+            cos, sin = self.rotary_emb(time_ids, query.device)
             query, key = apply_rotary_pos_emb(query, key, cos, sin)
 
         if layer_past is not None:
