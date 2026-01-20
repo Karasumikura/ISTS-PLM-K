@@ -206,17 +206,20 @@ class DataEmbedding_ITS_Ind(nn.Module):
     
 
 
-class DataEmbedding_ITS_Ind_VarPrompt_indicator(nn.Module):
-    def __init__(self, c_in, d_model, n_var, device=None, dropout=0.1):
-        super(DataEmbedding_ITS_Ind_VarPrompt_indicator, self).__init__()
+class DataEmbedding_ITS_Ind_VarPrompt(nn.Module):
+    def __init__(self, c_in, d_model, n_var, device=None, dropout=0.1, use_te=True):
+        super(DataEmbedding_ITS_Ind_VarPrompt, self).__init__()
 
         self.d_model = d_model
-        self.time_embedding = TimeEmbedding(d_model=d_model).to(device)
+        # 修改点 1: 替换原来的 TimeEmbedding 为 LearnableTimeRoPE
+        # self.time_embedding = TimeEmbedding(d_model=d_model).to(device)
+        self.time_rope = LearnableTimeRoPE(d_model=d_model).to(device)
+        
         self.value_embedding = ValueEmbedding(c_in=2, d_model=d_model).to(device)
         self.variable_embedding = VariableEmbedding(n_var=n_var, d_model=d_model).to(device)
-        self.indicator_embedding = nn.Embedding(2, d_model).to(device)
         self.vars = torch.arange(n_var).to(device)
         self.device = device
+        self.use_te = use_te
         
         self.dropout = nn.Dropout(p=dropout)
 
@@ -227,20 +230,23 @@ class DataEmbedding_ITS_Ind_VarPrompt_indicator(nn.Module):
         x_mark: (B, L, D) tensor containing 1 where values were observed and 0 otherwise.
         """
         B, L, D = x.shape
-        time_emb = self.time_embedding(tt.unsqueeze(dim=-1)) # # (B, L, D, d_model)
-        x_ones = torch.ones_like(x).to(self.device)
+        # 注释掉旧的时间编码调用
+        # time_emb = self.time_embedding(tt.unsqueeze(dim=-1)) # (B, L, D, d_model)
+        
         # print(time_emb)
         x = x.unsqueeze(dim=-1) # (B, L, D, 1)
         x_mark = x_mark.unsqueeze(dim=-1) # (B, L, D, 1)
         x_int = torch.cat([x, x_mark], dim=-1) # (B, L, D, 2)
         value_emb = self.value_embedding(x_int) # (B, L, D, d_model)
-        # print(x_mark.shape, time_emb.shape, value_emb.shape)
-        x = x_mark*time_emb + value_emb + self.indicator_embedding(x_ones.int()) # (B, L, D, d_model)
+
+        # 修改点 2: 使用 ROPE 旋转 value_emb，而不是相加
+        if(self.use_te):
+            # 将时间张量扩展维度以匹配 LearnableTimeRoPE 的输入要求 (B, L, D, 1)
+            x = self.time_rope(value_emb, tt.unsqueeze(dim=-1))
+        else:
+            x = value_emb
         
-        vars_tenosr = self.vars.view(1, 1, -1).repeat(B, 1, 1)
-        vars_zeros = torch.zeros_like(vars_tenosr).to(self.device)
-        test = self.indicator_embedding(vars_zeros.int())
-        vars_prompt = self.variable_embedding(vars_tenosr) + self.indicator_embedding(vars_zeros.int())
+        vars_prompt = self.variable_embedding(self.vars.view(1, 1, -1).repeat(B, 1, 1))
         # text_embedding 
         x = torch.cat([vars_prompt, x], dim=1)
         # print(x.shape)
@@ -444,3 +450,34 @@ class DataEmbedding_wo_time(nn.Module):
     def forward(self, x):
         x = self.value_embedding(x) + self.position_embedding(x)
         return self.dropout(x)
+class LearnableTimeRoPE(nn.Module):
+    def __init__(self, d_model):
+        super(LearnableTimeRoPE, self).__init__()
+        self.d_model = d_model
+        assert d_model % 2 == 0, "d_model must be even for RoPE"
+        # 定义一个可学习的线性层，将时间值映射为频率/角度
+        self.time_transform = nn.Linear(1, d_model // 2)
+
+    def forward(self, x, t):
+        """
+        x: (..., d_model) 输入的 Embedding 向量
+        t: (..., 1) 时间/位置值
+        """
+        # 计算角度: (..., d_model/2)
+        angles = self.time_transform(t)
+        
+        sin = torch.sin(angles)
+        cos = torch.cos(angles)
+        
+        # 将输入 x 重塑为 (..., d_model/2, 2) 以便进行旋转操作
+        x_reshaped = x.view(*x.shape[:-1], self.d_model // 2, 2)
+        x1 = x_reshaped[..., 0]
+        x2 = x_reshaped[..., 1]
+        
+        # 应用旋转矩阵
+        x1_rot = x1 * cos - x2 * sin
+        x2_rot = x1 * sin + x2 * cos
+        
+        # 恢复形状
+        x_out = torch.stack([x1_rot, x2_rot], dim=-1).view(*x.shape)
+        return x_out
