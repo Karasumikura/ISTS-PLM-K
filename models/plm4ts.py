@@ -42,6 +42,8 @@ class ists_plm(nn.Module):
                 qwen = Qwen2Model.from_pretrained('Qwen/Qwen2.5-0.6B', output_attentions=True, output_hidden_states=True)
                 qwen.layers = qwen.layers[:n_layers]
                 self.gpts.append(qwen)
+            else:
+                raise ValueError(f"Unknown model type: {model_type}. Supported types are: 'gpt', 'bert', 'qwen'")
         
         if(opt.semi_freeze):
             print("Semi-freeze gpt")
@@ -198,6 +200,8 @@ class istsplm_forecast(nn.Module):
                 qwen = Qwen2Model.from_pretrained('Qwen/Qwen2.5-0.6B', output_attentions=True, output_hidden_states=True)
                 qwen.layers = qwen.layers[:n_layers]
                 self.gpts.append(qwen)
+            else:
+                raise ValueError(f"Unknown model type: {model_type}. Supported types are: 'gpt', 'bert', 'qwen'")
         
         if(opt.semi_freeze):
             print("Semi-freeze gpt")
