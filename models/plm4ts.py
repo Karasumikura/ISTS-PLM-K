@@ -19,23 +19,29 @@ class ists_plm(nn.Module):
 
         self.gpts = nn.ModuleList()
         for i in range(2):
-            gpt2 = GPT2Model_wope.from_pretrained('./PLMs/gpt2', output_attentions=True, output_hidden_states=True)
-            bert = BertModel_wope.from_pretrained('./PLMs/bert-base-uncased', output_attentions=True, output_hidden_states=True)
-            print(opt.te_model, opt.st_model)
-            if(i==0):
-                if opt.te_model == 'gpt':
-                    gpt2.h = gpt2.h[:opt.n_te_plmlayer]
-                    self.gpts.append(gpt2)
-                elif opt.te_model == 'bert':
-                    bert.encoder.layer = bert.encoder.layer[:opt.n_te_plmlayer]
-                    self.gpts.append(bert)
-            elif(i==1):
-                if opt.st_model == 'gpt':
-                    gpt2.h = gpt2.h[:opt.n_st_plmlayer]
-                    self.gpts.append(gpt2)
-                elif opt.st_model == 'bert':
-                    bert.encoder.layer = bert.encoder.layer[:opt.n_st_plmlayer]
-                    self.gpts.append(bert)
+            # Determine which model to load based on the encoder type
+            if i == 0:  # Time Encoder uses te_model
+                model_type = opt.te_model
+                n_layers = opt.n_te_plmlayer
+            else:  # Space Encoder uses st_model
+                model_type = opt.st_model
+                n_layers = opt.n_st_plmlayer
+            
+            print(f"Loading PLM {i}: {model_type}")
+            
+            # Load only the required model
+            if model_type == 'gpt':
+                gpt2 = GPT2Model_wope.from_pretrained('./PLMs/gpt2', output_attentions=True, output_hidden_states=True)
+                gpt2.h = gpt2.h[:n_layers]
+                self.gpts.append(gpt2)
+            elif model_type == 'bert':
+                bert = BertModel_wope.from_pretrained('./PLMs/bert-base-uncased', output_attentions=True, output_hidden_states=True)
+                bert.encoder.layer = bert.encoder.layer[:n_layers]
+                self.gpts.append(bert)
+            elif model_type == 'qwen':
+                qwen = Qwen2Model.from_pretrained('Qwen/Qwen2.5-0.6B', output_attentions=True, output_hidden_states=True)
+                qwen.layers = qwen.layers[:n_layers]
+                self.gpts.append(qwen)
         
         if(opt.semi_freeze):
             print("Semi-freeze gpt")
@@ -169,42 +175,29 @@ class istsplm_forecast(nn.Module):
         self.gpts = nn.ModuleList()
         # [MODIFIED] Increased range to 3 to include Decoder PLM
         for i in range(3):
-            gpt2 = GPT2Model_wope.from_pretrained('./PLMs/gpt2', output_attentions=True, output_hidden_states=True)
-            bert = BertModel_wope.from_pretrained('./PLMs/bert-base-uncased', output_attentions=True, output_hidden_states=True)
-            qwen = Qwen2Model.from_pretrained('Qwen/Qwen2.5-0.6B', output_attentions=True, output_hidden_states=True)
-            print(f"Loading PLM {i}: {opt.te_model if i != 1 else opt.st_model}")
+            # Determine which model to load based on the encoder type
+            if i == 0 or i == 2:  # Time Encoder and Decoder use te_model
+                model_type = opt.te_model
+                n_layers = opt.n_te_plmlayer
+            else:  # Space Encoder uses st_model
+                model_type = opt.st_model
+                n_layers = opt.n_st_plmlayer
             
-            if(i==0): # Time Encoder (Intra-series)
-                if opt.te_model == 'gpt':
-                    gpt2.h = gpt2.h[:opt.n_te_plmlayer]
-                    self.gpts.append(gpt2)
-                elif opt.te_model == 'bert':
-                    bert.encoder.layer = bert.encoder.layer[:opt.n_te_plmlayer]
-                    self.gpts.append(bert)
-                elif opt.te_model == 'qwen':
-                    qwen.layers = qwen.layers[:opt.n_te_plmlayer]
-                    self.gpts.append(qwen)
-            elif(i==1): # Space Encoder (Inter-series)
-                if opt.st_model == 'gpt':
-                    gpt2.h = gpt2.h[:opt.n_st_plmlayer]
-                    self.gpts.append(gpt2)
-                elif opt.st_model == 'bert':
-                    bert.encoder.layer = bert.encoder.layer[:opt.n_st_plmlayer]
-                    self.gpts.append(bert)
-                elif opt.st_model == 'qwen':
-                    qwen.layers = qwen.layers[:opt.n_st_plmlayer]
-                    self.gpts.append(qwen)
-            elif(i==2): # [NEW] Decoder (Sequence Generator)
-                # Using 'te_model' architecture for decoder as it processes time sequence
-                if opt.te_model == 'gpt':
-                    gpt2.h = gpt2.h[:opt.n_te_plmlayer]
-                    self.gpts.append(gpt2)
-                elif opt.te_model == 'bert':
-                    bert.encoder.layer = bert.encoder.layer[:opt.n_te_plmlayer]
-                    self.gpts.append(bert)
-                elif opt.te_model == 'qwen':
-                    qwen.layers = qwen.layers[:opt.n_te_plmlayer]
-                    self.gpts.append(qwen)
+            print(f"Loading PLM {i}: {model_type}")
+            
+            # Load only the required model
+            if model_type == 'gpt':
+                gpt2 = GPT2Model_wope.from_pretrained('./PLMs/gpt2', output_attentions=True, output_hidden_states=True)
+                gpt2.h = gpt2.h[:n_layers]
+                self.gpts.append(gpt2)
+            elif model_type == 'bert':
+                bert = BertModel_wope.from_pretrained('./PLMs/bert-base-uncased', output_attentions=True, output_hidden_states=True)
+                bert.encoder.layer = bert.encoder.layer[:n_layers]
+                self.gpts.append(bert)
+            elif model_type == 'qwen':
+                qwen = Qwen2Model.from_pretrained('Qwen/Qwen2.5-0.6B', output_attentions=True, output_hidden_states=True)
+                qwen.layers = qwen.layers[:n_layers]
+                self.gpts.append(qwen)
         
         if(opt.semi_freeze):
             print("Semi-freeze gpt")
