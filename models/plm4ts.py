@@ -218,7 +218,7 @@ class istsplm_forecast(nn.Module):
             print("Semi-freeze gpt")
             for i in range(len(self.gpts)):
                 for _, (name, param) in enumerate(self.gpts[i].named_parameters()):
-                    if 'ln' in name or 'LayerNorm' in name:
+                    if 'ln' in name or 'LayerNorm' in name or 'norm' in name.lower():
                         param.requires_grad = True
                     else:
                         param.requires_grad = False
