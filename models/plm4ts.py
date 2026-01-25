@@ -164,7 +164,8 @@ class istsplm_forecast(nn.Module):
         self.feat_dim = opt.input_dim
         self.d_model = opt.d_model
         self.input_len = opt.input_len
-        self.enc_embedding = DataEmbedding_ITS_Ind_VarPrompt(self.feat_dim, self.d_model, self.feat_dim, device=opt.device, dropout=opt.dropout)
+        use_rope = (opt.te_model == 'qwen')
+        self.enc_embedding = DataEmbedding_ITS_Ind_VarPrompt(self.feat_dim, self.d_model, self.feat_dim, device=opt.device, dropout=opt.dropout, use_rope=use_rope)
 
         self.gpts = nn.ModuleList()
         # [MODIFIED] Increased range to 3 to include Decoder PLM

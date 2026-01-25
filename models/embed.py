@@ -207,19 +207,22 @@ class DataEmbedding_ITS_Ind(nn.Module):
 
 
 class DataEmbedding_ITS_Ind_VarPrompt(nn.Module):
-    def __init__(self, c_in, d_model, n_var, device=None, dropout=0.1, use_te=True):
+    def __init__(self, c_in, d_model, n_var, device=None, dropout=0.1, use_te=True, use_rope=False):
         super(DataEmbedding_ITS_Ind_VarPrompt, self).__init__()
 
         self.d_model = d_model
-        # 修改点 1: 替换原来的 TimeEmbedding 为 LearnableTimeRoPE
-        # self.time_embedding = TimeEmbedding(d_model=d_model).to(device)
-        self.time_rope = LearnableTimeRoPE(d_model=d_model).to(device)
+        self.use_te = use_te
+        self.use_rope = use_rope
+
+        if self.use_rope:
+            self.time_rope = LearnableTimeRoPE(d_model=d_model).to(device)
+        else:
+            self.time_embedding = TimeEmbedding(d_model=d_model).to(device)
         
         self.value_embedding = ValueEmbedding(c_in=2, d_model=d_model).to(device)
         self.variable_embedding = VariableEmbedding(n_var=n_var, d_model=d_model).to(device)
         self.vars = torch.arange(n_var).to(device)
         self.device = device
-        self.use_te = use_te
         
         self.dropout = nn.Dropout(p=dropout)
 
@@ -230,19 +233,14 @@ class DataEmbedding_ITS_Ind_VarPrompt(nn.Module):
         x_mark: (B, L, D) tensor containing 1 where values were observed and 0 otherwise.
         """
         B, L, D = x.shape
-        # 注释掉旧的时间编码调用
-        # time_emb = self.time_embedding(tt.unsqueeze(dim=-1)) # (B, L, D, d_model)
-        
-        # print(time_emb)
-        x = x.unsqueeze(dim=-1) # (B, L, D, 1)
-        x_mark = x_mark.unsqueeze(dim=-1) # (B, L, D, 1)
-        x_int = torch.cat([x, x_mark], dim=-1) # (B, L, D, 2)
-        value_emb = self.value_embedding(x_int) # (B, L, D, d_model)
-
-        # 修改点 2: 使用 ROPE 旋转 value_emb，而不是相加
         if(self.use_te):
-            # 将时间张量扩展维度以匹配 LearnableTimeRoPE 的输入要求 (B, L, D, 1)
-            x = self.time_rope(value_emb, tt.unsqueeze(dim=-1))
+            if self.use_rope:
+                # RoPE Logic (for Qwen/Llama)
+                x = self.time_rope(value_emb, tt.unsqueeze(dim=-1))
+            else:
+                # Additive Positional Embedding Logic (for BERT/GPT2)
+                time_emb = self.time_embedding(tt.unsqueeze(dim=-1)) # (B, L, D, d_model)
+                x = x_mark * time_emb + value_emb
         else:
             x = value_emb
         
@@ -255,47 +253,7 @@ class DataEmbedding_ITS_Ind_VarPrompt(nn.Module):
         return self.dropout(x), vars_prompt
 
 
-class DataEmbedding_ITS_Ind_VarPrompt(nn.Module):
-    def __init__(self, c_in, d_model, n_var, device=None, dropout=0.1, use_te=True):
-        super(DataEmbedding_ITS_Ind_VarPrompt, self).__init__()
 
-        self.d_model = d_model
-        self.time_embedding = TimeEmbedding(d_model=d_model).to(device)
-        self.value_embedding = ValueEmbedding(c_in=2, d_model=d_model).to(device)
-        self.variable_embedding = VariableEmbedding(n_var=n_var, d_model=d_model).to(device)
-        self.vars = torch.arange(n_var).to(device)
-        self.device = device
-        self.use_te = use_te
-        
-        self.dropout = nn.Dropout(p=dropout)
-
-    def forward(self, tt, x, x_mark=None):
-        """ 
-        tt: (B, L, D)
-        x: (B, L, D) tensor containing the observed values.
-        x_mark: (B, L, D) tensor containing 1 where values were observed and 0 otherwise.
-        """
-        B, L, D = x.shape
-        time_emb = self.time_embedding(tt.unsqueeze(dim=-1)) # # (B, L, D, d_model)
-        # print(time_emb)
-        x = x.unsqueeze(dim=-1) # (B, L, D, 1)
-        x_mark = x_mark.unsqueeze(dim=-1) # (B, L, D, 1)
-        x_int = torch.cat([x, x_mark], dim=-1) # (B, L, D, 2)
-        value_emb = self.value_embedding(x_int) # (B, L, D, d_model)
-
-        # print(x_mark.shape, time_emb.shape, value_emb.shape)
-        if(self.use_te):
-            x = x_mark*time_emb + value_emb # (B, L, D, d_model)
-        else:
-            x = value_emb
-        
-        vars_prompt = self.variable_embedding(self.vars.view(1, 1, -1).repeat(B, 1, 1))
-        # text_embedding 
-        x = torch.cat([vars_prompt, x], dim=1)
-        # print(x.shape)
-        x = x.permute(0, 2, 1, 3).reshape(B*D, L+1, self.d_model) # (B*D, L+1, d_model)
- 
-        return self.dropout(x), vars_prompt
 
 
 # vector-based embedding
