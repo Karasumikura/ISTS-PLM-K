@@ -7,6 +7,7 @@ import lib.Dataset_MM as Dataset_MM
 from transformers.models.gpt2.modeling_gpt2_wope import GPT2Model_wope
 from transformers.models.bert.modeling_bert_wope import BertModel_wope
 from models.embed import *
+from models.modeling_qwen2_wope import Qwen2Model_wope
 
 class ists_plm(nn.Module):
     
@@ -179,6 +180,13 @@ class istsplm_forecast(nn.Module):
                 elif opt.te_model == 'bert':
                     bert.encoder.layer = bert.encoder.layer[:opt.n_te_plmlayer]
                     self.gpts.append(bert)
+                elif opt.te_model == 'qwen':
+                    qwen = Qwen2Model_wope.from_pretrained('./PLMs/qwen2.5-0.5b', output_attentions=True, output_hidden_states=True)
+                    # Assuming Qwen's structure has `layers` inside `model` or similar, but Qwen2Model has .layers
+                    # Let's check typical structure if we need to slice layers using n_te_plmlayer
+                    # Qwen2Model structure: self.layers = nn.ModuleList(...)
+                    qwen.layers = qwen.layers[:opt.n_te_plmlayer]
+                    self.gpts.append(qwen)
             elif(i==1): # Space Encoder (Inter-series)
                 if opt.st_model == 'gpt':
                     gpt2.h = gpt2.h[:opt.n_st_plmlayer]
