@@ -210,7 +210,7 @@ class istsplm_forecast(nn.Module):
                     bert.encoder.layer = bert.encoder.layer[:opt.n_te_plmlayer]
                     self.gpts.append(bert)
                 elif opt.de_model == 'qwen':
-                    qwen = Qwen2Model_wope.from_pretrained('./PLMs/qwen2.5-0.5b', output_attentions=True, output_hidden_states=True)
+                    qwen = Qwen2Model_wope.from_pretrained('./PLMs/Qwen2.5-0.5B', output_attentions=True, output_hidden_states=True)
                     qwen.layers = qwen.layers[:opt.n_te_plmlayer]
                     self.gpts.append(qwen)
         
