@@ -234,6 +234,10 @@ class DataEmbedding_ITS_Ind_VarPrompt(nn.Module):
         """
         B, L, D = x.shape
         if(self.use_te):
+            x = x.unsqueeze(dim=-1) # (B, L, D, 1)
+            x_mark = x_mark.unsqueeze(dim=-1) # (B, L, D, 1)
+            x_int = torch.cat([x, x_mark], dim=-1) # (B, L, D, 2)
+            value_emb = self.value_embedding(x_int) # (B, L, D, d_model)
             if self.use_rope:
                 # RoPE Logic (for Qwen/Llama)
                 x = self.time_rope(value_emb, tt.unsqueeze(dim=-1))
