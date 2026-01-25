@@ -66,6 +66,7 @@ parser.add_argument('--n_st_plmlayer', type=int, default=6)
 parser.add_argument('--te_model', type=str, default='gpt')
 parser.add_argument('--st_model', type=str, default='bert')
 parser.add_argument('--de_model', type=str, default='gpt') # [NEW] 3rd PLM (Decoder) model choice
+parser.add_argument('--no_decoder_plm', action='store_true', help='If True, disable the 3rd PLM (Decoder) and use simple projection.')
 parser.add_argument('--max_len', type=int, default=-1)
 parser.add_argument('--semi_freeze', action='store_true')
 parser.add_argument('--sample_rate', type=float, default=1.0)

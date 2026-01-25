@@ -169,7 +169,10 @@ class istsplm_forecast(nn.Module):
 
         self.gpts = nn.ModuleList()
         # [MODIFIED] Increased range to 3 to include Decoder PLM
-        for i in range(3):
+        self.no_decoder_plm = getattr(opt, 'no_decoder_plm', False)
+        n_plms = 2 if self.no_decoder_plm else 3
+        
+        for i in range(n_plms):
             gpt2 = GPT2Model_wope.from_pretrained('./PLMs/gpt2', output_attentions=True, output_hidden_states=True)
             bert = BertModel_wope.from_pretrained('./PLMs/bert-base-uncased', output_attentions=True, output_hidden_states=True)
             # Determine model name for logging
@@ -360,15 +363,19 @@ class istsplm_forecast(nn.Module):
         # 6. Pass through 3rd PLM (Decoder)
         # Models dependencies between future time steps
         
-        # [FIX] Projection In for Decoder if needed
-        if self.proj_de_in is not None:
-            decoder_input = self.proj_de_in(decoder_input)
+        if self.no_decoder_plm:
+            # Skip PLM, use fused features directly
+            dec_out = decoder_input
+        else:
+            # [FIX] Projection In for Decoder if needed
+            if self.proj_de_in is not None:
+                decoder_input = self.proj_de_in(decoder_input)
+                
+            dec_out = self.gpts[2](inputs_embeds=decoder_input).last_hidden_state # (B*D, Lp, d_model or de_dim)
             
-        dec_out = self.gpts[2](inputs_embeds=decoder_input).last_hidden_state # (B*D, Lp, d_model or de_dim)
-        
-        # [FIX] Projection Out for Decoder if needed
-        if self.proj_de_out is not None:
-            dec_out = self.proj_de_out(dec_out)
+            # [FIX] Projection Out for Decoder if needed
+            if self.proj_de_out is not None:
+                dec_out = self.proj_de_out(dec_out)
         
         # 7. Project to Value
         pred = self.decoder_out_proj(dec_out) # (B*D, Lp, 1)

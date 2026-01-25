@@ -1,0 +1,16 @@
+
+gpu=0
+
+for seed in 1 2 3 4 5
+do
+
+python regression.py \
+    --batch 6 --lr 5e-4 --state 'def' --epoch 1000 --patience 10 \
+    --dataset physionet --seed $seed --d_model 896 --max_len -1 \
+    --model istsplm_forecast --n_te_plmlayer 6 \
+    --gpu $gpu --n_st_plmlayer 6  --dropout 0.1 \
+    --te_model qwen --st_model bert --de_model bert --sample_rate 1 --semi_freeze \
+    --history 24 --task imputation \
+    # --no_decoder_plm
+
+done
