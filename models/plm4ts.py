@@ -244,6 +244,22 @@ class istsplm_forecast(nn.Module):
                 nn.init.xavier_uniform_(self.proj_st_out.weight)
                 nn.init.zeros_(self.proj_st_out.bias)
         
+        # [FIX] Handle Dimension Mismatch between d_model and Decoder (gpts[2])
+        self.proj_de_in = None
+        self.proj_de_out = None
+        if len(self.gpts) > 2:
+            de_hidden_size = self.gpts[2].config.hidden_size
+            if de_hidden_size != self.d_model:
+                print(f"Dimension Mismatch detected: d_model({self.d_model}) vs DE-Model({de_hidden_size}). Creating projection layers.")
+                self.proj_de_in = nn.Linear(self.d_model, de_hidden_size).to(opt.device)
+                self.proj_de_out = nn.Linear(de_hidden_size, self.d_model).to(opt.device)
+                
+                # Initialize weights properly
+                nn.init.xavier_uniform_(self.proj_de_in.weight)
+                nn.init.zeros_(self.proj_de_in.bias)
+                nn.init.xavier_uniform_(self.proj_de_out.weight)
+                nn.init.zeros_(self.proj_de_out.bias)
+        
         self.ln_proj = nn.LayerNorm(self.d_model)
 
         # [MODIFIED] Decoder components (Replacing simple MLP)
@@ -342,7 +358,16 @@ class istsplm_forecast(nn.Module):
         
         # 6. Pass through 3rd PLM (Decoder)
         # Models dependencies between future time steps
-        dec_out = self.gpts[2](inputs_embeds=decoder_input).last_hidden_state # (B*D, Lp, d_model)
+        
+        # [FIX] Projection In for Decoder if needed
+        if self.proj_de_in is not None:
+            decoder_input = self.proj_de_in(decoder_input)
+            
+        dec_out = self.gpts[2](inputs_embeds=decoder_input).last_hidden_state # (B*D, Lp, d_model or de_dim)
+        
+        # [FIX] Projection Out for Decoder if needed
+        if self.proj_de_out is not None:
+            dec_out = self.proj_de_out(dec_out)
         
         # 7. Project to Value
         pred = self.decoder_out_proj(dec_out) # (B*D, Lp, 1)
