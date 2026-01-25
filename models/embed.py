@@ -419,6 +419,15 @@ class LearnableTimeRoPE(nn.Module):
         assert d_model % 2 == 0, "d_model must be even for RoPE"
         # 定义一个可学习的线性层，将时间值映射为频率/角度
         self.time_transform = nn.Linear(1, d_model // 2)
+        
+        # [IMPROVEMENT] Initialize with standard RoPE frequencies
+        # Standard frequencies: 10000^(-2i/d)
+        half_dim = d_model // 2
+        freqs = 1.0 / (10000 ** (torch.arange(0, half_dim, dtype=torch.float32) / half_dim))
+        
+        # Linear weight: (out_features, in_features) -> (d_model//2, 1)
+        self.time_transform.weight.data = freqs.unsqueeze(1)
+        self.time_transform.bias.data.zero_()
 
     def forward(self, x, t):
         """
