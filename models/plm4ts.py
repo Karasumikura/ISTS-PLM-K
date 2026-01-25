@@ -171,7 +171,14 @@ class istsplm_forecast(nn.Module):
         for i in range(3):
             gpt2 = GPT2Model_wope.from_pretrained('./PLMs/gpt2', output_attentions=True, output_hidden_states=True)
             bert = BertModel_wope.from_pretrained('./PLMs/bert-base-uncased', output_attentions=True, output_hidden_states=True)
-            print(f"Loading PLM {i}: {opt.te_model if i != 1 else opt.st_model}")
+            # Determine model name for logging
+            model_type = opt.te_model
+            if i == 1:
+                model_type = opt.st_model
+            elif i == 2:
+                model_type = opt.de_model
+                
+            print(f"Loading PLM {i}: {model_type}")
             
             if(i==0): # Time Encoder (Intra-series)
                 if opt.te_model == 'gpt':
@@ -195,13 +202,17 @@ class istsplm_forecast(nn.Module):
                     bert.encoder.layer = bert.encoder.layer[:opt.n_st_plmlayer]
                     self.gpts.append(bert)
             elif(i==2): # [NEW] Decoder (Sequence Generator)
-                # Using 'te_model' architecture for decoder as it processes time sequence
-                if opt.te_model == 'gpt':
+                # Using 'de_model' architecture for decoder
+                if opt.de_model == 'gpt':
                     gpt2.h = gpt2.h[:opt.n_te_plmlayer]
                     self.gpts.append(gpt2)
-                elif opt.te_model == 'bert':
+                elif opt.de_model == 'bert':
                     bert.encoder.layer = bert.encoder.layer[:opt.n_te_plmlayer]
                     self.gpts.append(bert)
+                elif opt.de_model == 'qwen':
+                    qwen = Qwen2Model_wope.from_pretrained('./PLMs/qwen2.5-0.5b', output_attentions=True, output_hidden_states=True)
+                    qwen.layers = qwen.layers[:opt.n_te_plmlayer]
+                    self.gpts.append(qwen)
         
         if(opt.semi_freeze):
             print("Semi-freeze gpt")
@@ -216,6 +227,22 @@ class istsplm_forecast(nn.Module):
             for i in range(len(self.gpts)):
                 for _, (name, param) in enumerate(self.gpts[i].named_parameters()):
                     param.requires_grad = False
+        
+        # [FIX] Handle Dimension Mismatch between d_model and Space Encoder (gpts[1])
+        self.proj_st_in = None
+        self.proj_st_out = None
+        if len(self.gpts) > 1:
+            st_hidden_size = self.gpts[1].config.hidden_size
+            if st_hidden_size != self.d_model:
+                print(f"Dimension Mismatch detected: d_model({self.d_model}) vs ST-Model({st_hidden_size}). Creating projection layers.")
+                self.proj_st_in = nn.Linear(self.d_model, st_hidden_size).to(opt.device)
+                self.proj_st_out = nn.Linear(st_hidden_size, self.d_model).to(opt.device)
+                
+                # Initialize weights properly (optional but recommended)
+                nn.init.xavier_uniform_(self.proj_st_in.weight)
+                nn.init.zeros_(self.proj_st_in.bias)
+                nn.init.xavier_uniform_(self.proj_st_out.weight)
+                nn.init.zeros_(self.proj_st_out.bias)
         
         self.ln_proj = nn.LayerNorm(self.d_model)
 
@@ -257,8 +284,18 @@ class istsplm_forecast(nn.Module):
         outputs = self.ln_proj(outputs.view(B, D, -1))  # (B, D, d_model)
 
         outputs = outputs + var_embedding.squeeze()
+        outputs = outputs + var_embedding.squeeze()
+        
+        # [FIX] Projection In if needed
+        if self.proj_st_in is not None:
+            outputs = self.proj_st_in(outputs)
+            
         # Pass through Variable-Aware PLM (Inter-series modeling)
-        outputs = self.gpts[1](inputs_embeds=outputs).last_hidden_state # (B, D, d_model)
+        outputs = self.gpts[1](inputs_embeds=outputs).last_hidden_state # (B, D, d_model or st_dim)
+        
+        # [FIX] Projection Out if needed
+        if self.proj_st_out is not None:
+            outputs = self.proj_st_out(outputs)
         
         # 'outputs' is now the Context Vector for each variable
 

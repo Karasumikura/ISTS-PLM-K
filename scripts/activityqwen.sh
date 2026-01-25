@@ -9,7 +9,7 @@ python regression.py \
     --dataset activity --seed $seed --d_model 896 --max_len -1 \
     --model istsplm_forecast --n_te_plmlayer 6 \
     --gpu $gpu --n_st_plmlayer 6  --dropout 0.1 \
-    --te_model qwen --st_model bert --sample_rate 1 --semi_freeze \
+    --te_model qwen --st_model bert --de_model qwen --sample_rate 1 --semi_freeze \
     --history 3000 --task forecasting
 
 done
