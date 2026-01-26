@@ -5,7 +5,7 @@ for seed in 1 2 3 4 5
 do
 
 python regression.py \
-    --batch 6 --lr 5e-4 --state 'def' --epoch 1000 --patience 10 \
+    --batch 6 --lr 5e-4 --state 'def' --epoch 1000 --patience 15 \
     --dataset activity --seed $seed --d_model 896 --max_len -1 \
     --model istsplm_forecast --n_te_plmlayer 6 \
     --gpu $gpu --n_st_plmlayer 6  --dropout 0.1 \
