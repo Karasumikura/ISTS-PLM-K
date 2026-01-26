@@ -11,6 +11,6 @@ python regression.py \
     --gpu $gpu --n_st_plmlayer 6  --dropout 0.1 \
     --te_model qwen --st_model bert --de_model bert --sample_rate 1 --semi_freeze \
     --history 24 --task imputation \
-    # --no_decoder_plm
+    --no_decoder_plm
 
 done
