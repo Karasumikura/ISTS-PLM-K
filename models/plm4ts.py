@@ -8,6 +8,26 @@ from transformers.models.gpt2.modeling_gpt2_wope import GPT2Model_wope
 from transformers.models.bert.modeling_bert_wope import BertModel_wope
 from models.embed import *
 
+def generate_time_ids_for_rope(observed_tp, B, L, D):
+    """
+    Generate time_ids from observed_tp for RoPE.
+    
+    Args:
+        observed_tp: (B, L, D) tensor of observed time points
+        B: batch size
+        L: sequence length
+        D: number of variables/dimensions
+    
+    Returns:
+        time_ids: (B*D, L+1) tensor with time indices for RoPE
+    """
+    # observed_tp: (B, L, D) -> (B*D, L)
+    # Use contiguous().view() for better memory efficiency
+    observed_tp_reshaped = observed_tp.permute(0, 2, 1).contiguous().view(B*D, L)  # (B*D, L)
+    # Add a zero time step at the beginning for the prompt token
+    time_ids = torch.cat([torch.zeros_like(observed_tp_reshaped[:, :1]), observed_tp_reshaped], dim=1)  # (B*D, L+1)
+    return time_ids
+
 class ists_plm(nn.Module):
     
     def __init__(self, opt):
@@ -65,7 +85,11 @@ class ists_plm(nn.Module):
         B, L, D = observed_data.shape
         
         outputs, var_embedding = self.enc_embedding(observed_tp, observed_data, observed_mask) # (B*D, L+1, d_model)
-        outputs = self.gpts[0](inputs_embeds=outputs).last_hidden_state # (B*D, L+1, d_model)
+        
+        # Generate time_ids from observed_tp for RoPE
+        time_ids = generate_time_ids_for_rope(observed_tp, B, L, D)
+        
+        outputs = self.gpts[0](inputs_embeds=outputs, time_ids=time_ids).last_hidden_state # (B*D, L+1, d_model)
         observed_mask = observed_mask.permute(0, 2, 1).reshape(B*D, -1, 1) # (B*D, L, 1)
         observed_mask = torch.cat([torch.ones_like(observed_mask[:,:1]), observed_mask], dim=1) # (B*D, L+1, 1)
         n_nonmask = observed_mask.sum(dim=1)  # (B*D, 1)
@@ -238,7 +262,11 @@ class istsplm_forecast(nn.Module):
         
         # --- PART 1: ENCODING HISTORY (Standard ISTS-PLM Logic) ---
         outputs, var_embedding = self.enc_embedding(observed_tp, observed_data, observed_mask) # (B*D, L+1, d_model)
-        outputs = self.gpts[0](inputs_embeds=outputs).last_hidden_state # (B*D, L+1, d_model)
+        
+        # Generate time_ids from observed_tp for RoPE
+        time_ids = generate_time_ids_for_rope(observed_tp, B, L, D)
+        
+        outputs = self.gpts[0](inputs_embeds=outputs, time_ids=time_ids).last_hidden_state # (B*D, L+1, d_model)
 
         observed_mask = observed_mask.permute(0, 2, 1).reshape(B*D, -1, 1) # (B*D, L, 1)
         observed_mask = torch.cat([torch.ones_like(observed_mask[:,:1]), observed_mask], dim=1) # (B*D, L+1, 1)

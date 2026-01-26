@@ -64,6 +64,79 @@ GPT2_PRETRAINED_MODEL_ARCHIVE_LIST = [
 ]
 
 
+class TimeRotaryEmbedding(nn.Module):
+    """
+    Rotary Position Embedding for 1D time sequences.
+    Applies rotation to query and key vectors based on time_ids.
+    """
+    def __init__(self, dim, max_time_steps=10000):
+        super().__init__()
+        self.dim = dim
+        inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer("inv_freq", inv_freq)
+        self.max_time_steps = max_time_steps
+
+    def forward(self, time_ids, device):
+        """
+        Args:
+            time_ids: (batch_size, seq_len) tensor of time indices
+            device: device to create tensors on
+        
+        Returns:
+            cos, sin: (batch_size, seq_len, dim) tensors for rotary embeddings
+        """
+        # time_ids shape: (batch_size, seq_len)
+        # Ensure time_ids is on the same device as inv_freq
+        time_ids = time_ids.to(device).float()
+        
+        # Move inv_freq to device if needed (cached for efficiency)
+        inv_freq = self.inv_freq
+        if inv_freq.device != device:
+            inv_freq = inv_freq.to(device)
+        
+        # Compute frequencies: (batch_size, seq_len, dim/2)
+        freqs = torch.einsum('bs,d->bsd', time_ids, inv_freq)
+        
+        # Compute embeddings: (batch_size, seq_len, dim)
+        emb = torch.cat([freqs, freqs], dim=-1)
+        
+        return emb.cos(), emb.sin()
+
+
+def rotate_half(x):
+    """Rotate half the hidden dims of the input."""
+    x1, x2 = x[..., :x.shape[-1]//2], x[..., x.shape[-1]//2:]
+    return torch.cat([-x2, x1], dim=-1)
+
+
+def apply_rotary_pos_emb(q, k, cos, sin):
+    """
+    Apply rotary position embeddings to query and key tensors.
+    
+    Args:
+        q: (batch_size, num_heads, seq_len, head_dim) query tensor
+        k: (batch_size, num_heads, seq_len, head_dim) key tensor
+        cos: (batch_size, seq_len, head_dim) cosine embeddings
+        sin: (batch_size, seq_len, head_dim) sine embeddings
+    
+    Returns:
+        q, k with rotary embeddings applied
+    """
+    # Reshape cos and sin to match q and k dimensions
+    # cos, sin: (batch_size, seq_len, head_dim) -> (batch_size, 1, seq_len, head_dim)
+    cos = cos.unsqueeze(1)
+    sin = sin.unsqueeze(1)
+    
+    # Apply rotation: [cos, cos] * [q] + [-sin, sin] * [q_rotate]
+    # where q_rotate is q with adjacent pairs swapped
+    # This implements the rotation matrix multiplication
+    
+    q_rotated = q * cos + rotate_half(q) * sin
+    k_rotated = k * cos + rotate_half(k) * sin
+    
+    return q_rotated, k_rotated
+
+
 def load_tf_weights_in_gpt2(model, config, gpt2_checkpoint_path):
     """Load tf checkpoints in a pytorch model"""
     try:
@@ -164,6 +237,9 @@ class GPT2Attention(nn.Module):
         self.resid_dropout = nn.Dropout(config.resid_pdrop)
 
         self.pruned_heads = set()
+        
+        # Initialize TimeRotaryEmbedding for RoPE
+        self.rotary_emb = TimeRotaryEmbedding(self.head_dim)
 
     def prune_heads(self, heads):
         if len(heads) == 0:
@@ -298,6 +374,7 @@ class GPT2Attention(nn.Module):
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
+        time_ids: Optional[torch.LongTensor] = None,
     ) -> Tuple[Union[torch.Tensor, Tuple[torch.Tensor]], ...]:
         if encoder_hidden_states is not None:
             if not hasattr(self, "q_attn"):
@@ -315,6 +392,13 @@ class GPT2Attention(nn.Module):
         query = self._split_heads(query, self.num_heads, self.head_dim)
         key = self._split_heads(key, self.num_heads, self.head_dim)
         value = self._split_heads(value, self.num_heads, self.head_dim)
+
+        # Apply RoPE if time_ids are provided
+        # Note: RoPE is only applied to self-attention, not cross-attention
+        # Cross-attention queries attend to encoder states which have different temporal semantics
+        if time_ids is not None and not self.is_cross_attention:
+            cos, sin = self.rotary_emb(time_ids, query.device)
+            query, key = apply_rotary_pos_emb(query, key, cos, sin)
 
         if layer_past is not None:
             past_key, past_value = layer_past
@@ -385,6 +469,7 @@ class GPT2Block(nn.Module):
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
+        time_ids: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple[torch.Tensor], Optional[Tuple[torch.Tensor, Tuple[torch.FloatTensor, ...]]]]:
         residual = hidden_states
         hidden_states = self.ln_1(hidden_states)
@@ -395,6 +480,7 @@ class GPT2Block(nn.Module):
             head_mask=head_mask,
             use_cache=use_cache,
             output_attentions=output_attentions,
+            time_ids=time_ids,
         )
         attn_output = attn_outputs[0]  # output_attn: a, present, (attentions)
         outputs = attn_outputs[1:]
@@ -769,6 +855,7 @@ class GPT2Model_wope(GPT2PreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        time_ids: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, BaseModelOutputWithPastAndCrossAttentions]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -910,6 +997,7 @@ class GPT2Model_wope(GPT2PreTrainedModel):
                     encoder_attention_mask=encoder_attention_mask,
                     use_cache=use_cache,
                     output_attentions=output_attentions,
+                    time_ids=time_ids,
                 )
 
             hidden_states = outputs[0]
