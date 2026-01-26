@@ -73,6 +73,15 @@ parser.add_argument('--sample_rate', type=float, default=1.0)
 parser.add_argument('--mask_rate', type=float, default=0.3)
 parser.add_argument('--collate', type=str, default='indseq')
 
+# LoRA parameters
+parser.add_argument('--use_lora', action='store_true', help='Enable LoRA (Low-Rank Adaptation)')
+parser.add_argument('--lora_r', type=int, default=8, help='Rank of LoRA')
+parser.add_argument('--lora_alpha', type=int, default=16, help='Scaling factor for LoRA')
+parser.add_argument('--lora_dropout', type=float, default=0.1, help='Dropout probability for LoRA')
+parser.add_argument('--lora_target_modules', type=str, default=None, 
+                    help='Comma-separated list of module names to apply LoRA to (e.g., "q_proj,v_proj")')
+
+
 args = parser.parse_args()
 file_name = os.path.basename(__file__)[:-3]
 os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu

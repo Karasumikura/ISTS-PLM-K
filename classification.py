@@ -266,6 +266,14 @@ def main():
     parser.add_argument('--zero_shot_age', action='store_true')
     parser.add_argument('--zero_shot_ICU', action='store_true')
 
+    # LoRA parameters
+    parser.add_argument('--use_lora', action='store_true', help='Enable LoRA (Low-Rank Adaptation)')
+    parser.add_argument('--lora_r', type=int, default=8, help='Rank of LoRA')
+    parser.add_argument('--lora_alpha', type=int, default=16, help='Scaling factor for LoRA')
+    parser.add_argument('--lora_dropout', type=float, default=0.1, help='Dropout probability for LoRA')
+    parser.add_argument('--lora_target_modules', type=str, default=None, 
+                        help='Comma-separated list of module names to apply LoRA to (e.g., "q_proj,v_proj")')
+
     # dataset
     parser.add_argument('--split', type=str, default='1')
 

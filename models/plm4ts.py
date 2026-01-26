@@ -8,6 +8,7 @@ from transformers.models.gpt2.modeling_gpt2_wope import GPT2Model_wope
 from transformers.models.bert.modeling_bert_wope import BertModel_wope
 from models.embed import *
 from models.modeling_qwen2_wope import Qwen2Model_wope
+from models.lora_layers import apply_lora_to_model, count_lora_parameters
 
 class ists_plm(nn.Module):
     
@@ -51,6 +52,27 @@ class ists_plm(nn.Module):
             for i in range(len(self.gpts)):
                 for _, (name, param) in enumerate(self.gpts[i].named_parameters()):
                     param.requires_grad = False
+        
+        # Apply LoRA if enabled
+        if hasattr(opt, 'use_lora') and opt.use_lora:
+            print(f"Applying LoRA with r={opt.lora_r}, alpha={opt.lora_alpha}")
+            target_modules = getattr(opt, 'lora_target_modules', None)
+            if target_modules is not None and isinstance(target_modules, str):
+                target_modules = target_modules.split(',')
+            
+            for i in range(len(self.gpts)):
+                self.gpts[i] = apply_lora_to_model(
+                    self.gpts[i],
+                    target_modules=target_modules,
+                    r=opt.lora_r,
+                    lora_alpha=opt.lora_alpha,
+                    lora_dropout=opt.lora_dropout,
+                )
+            
+            # Count and report LoRA parameters
+            lora_params, total_params, trainable_params = count_lora_parameters(self)
+            print(f"LoRA Parameters: {lora_params:,} / Total: {total_params:,} / Trainable: {trainable_params:,}")
+            print(f"Trainable percentage: {100 * trainable_params / total_params:.2f}%")
 
         self.act = F.gelu
         self.dropout = nn.Dropout(p=opt.dropout)
@@ -192,7 +214,7 @@ class istsplm_forecast(nn.Module):
                     bert.encoder.layer = bert.encoder.layer[:opt.n_te_plmlayer]
                     self.gpts.append(bert)
                 elif opt.te_model == 'qwen':
-                    qwen = Qwen2Model_wope.from_pretrained('./PLMs/Qwen2.5-0.5B', output_attentions=True, output_hidden_states=True)
+                    qwen = Qwen2Model_wope.from_pretrained('./PLMs/Qwen2.5-0.5B', output_attentions=True, output_hidden_states=True, attn_implementation='eager')
                     # Assuming Qwen's structure has `layers` inside `model` or similar, but Qwen2Model has .layers
                     # Let's check typical structure if we need to slice layers using n_te_plmlayer
                     # Qwen2Model structure: self.layers = nn.ModuleList(...)
@@ -214,7 +236,7 @@ class istsplm_forecast(nn.Module):
                     bert.encoder.layer = bert.encoder.layer[:opt.n_te_plmlayer]
                     self.gpts.append(bert)
                 elif opt.de_model == 'qwen':
-                    qwen = Qwen2Model_wope.from_pretrained('./PLMs/Qwen2.5-0.5B', output_attentions=True, output_hidden_states=True)
+                    qwen = Qwen2Model_wope.from_pretrained('./PLMs/Qwen2.5-0.5B', output_attentions=True, output_hidden_states=True, attn_implementation='eager')
                     qwen.layers = qwen.layers[:opt.n_te_plmlayer]
                     self.gpts.append(qwen)
         
@@ -231,6 +253,27 @@ class istsplm_forecast(nn.Module):
             for i in range(len(self.gpts)):
                 for _, (name, param) in enumerate(self.gpts[i].named_parameters()):
                     param.requires_grad = False
+        
+        # Apply LoRA if enabled
+        if hasattr(opt, 'use_lora') and opt.use_lora:
+            print(f"Applying LoRA with r={opt.lora_r}, alpha={opt.lora_alpha}")
+            target_modules = getattr(opt, 'lora_target_modules', None)
+            if target_modules is not None and isinstance(target_modules, str):
+                target_modules = target_modules.split(',')
+            
+            for i in range(len(self.gpts)):
+                self.gpts[i] = apply_lora_to_model(
+                    self.gpts[i],
+                    target_modules=target_modules,
+                    r=opt.lora_r,
+                    lora_alpha=opt.lora_alpha,
+                    lora_dropout=opt.lora_dropout,
+                )
+            
+            # Count and report LoRA parameters
+            lora_params, total_params, trainable_params = count_lora_parameters(self)
+            print(f"LoRA Parameters: {lora_params:,} / Total: {total_params:,} / Trainable: {trainable_params:,}")
+            print(f"Trainable percentage: {100 * trainable_params / total_params:.2f}%")
         
         # [FIX] Handle Dimension Mismatch between d_model and Space Encoder (gpts[1])
         self.proj_st_in = None
