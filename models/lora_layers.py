@@ -86,13 +86,13 @@ class LinearLoRA(nn.Module):
             original_layer.bias.requires_grad = False
         
         # LoRA matrices
-        # A: (r, in_features) - initialized with Kaiming uniform
+        # A: (r, in_features) - initialized with random Gaussian
         # B: (out_features, r) - initialized with zeros
         self.lora_A = nn.Parameter(torch.zeros(r, in_features))
         self.lora_B = nn.Parameter(torch.zeros(out_features, r))
         
-        # Initialize A with Kaiming uniform (same as default Linear initialization)
-        nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
+        # Initialize A with random Gaussian distribution
+        nn.init.normal_(self.lora_A, mean=0.0, std=0.02)
         # B is kept at zero so LoRA starts with no effect (ΔW = 0)
         nn.init.zeros_(self.lora_B)
         
